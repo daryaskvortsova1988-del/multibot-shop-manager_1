@@ -545,7 +545,7 @@ async def end_surrey(callback: CallbackQuery):
         url="https://t.me/Better_House_Bot"
     ))
     builder.add(types.InlineKeyboardButton(
-        text="Автотехника",
+        text="Автотехника ",
         url="https://t.me/BestAutoAviaBot"
     ))
     builder.add(types.InlineKeyboardButton(

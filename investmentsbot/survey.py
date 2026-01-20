@@ -468,12 +468,12 @@ async def process_q16(message: Message, state: FSMContext):
         url="t.me/wonderful_project_bot"
     ))
     builder.add(types.InlineKeyboardButton(
-        text="Финансы",
-        url="https://t.me/OurWonderfulBot"
+        text="Капиталы для инвестиций",
+        url="https://t.me/Our_Inv_Bot"
     ))
     builder.add(types.InlineKeyboardButton(
         text="Бизнес/Партнерство",
-        url="https://t.me/bestsocialbot"
+        url="https://t.me/OurWonderfulBot"
     ))
     builder.add(types.InlineKeyboardButton(
         text="Образование/Профессия",
@@ -545,7 +545,7 @@ async def end_surrey(callback: CallbackQuery):
         url="https://t.me/Better_House_Bot"
     ))
     builder.add(types.InlineKeyboardButton(
-        text="Автотехника",
+        text="Автотехника ",
         url="https://t.me/BestAutoAviaBot"
     ))
     builder.add(types.InlineKeyboardButton(
@@ -561,12 +561,12 @@ async def end_surrey(callback: CallbackQuery):
         url="t.me/wonderful_project_bot"
     ))
     builder.add(types.InlineKeyboardButton(
-        text="Финансы",
-        url="https://t.me/OurWonderfulBot"
+        text="Капиталы для инвестиций",
+        url="https://t.me/Our_Inv_Bot"
     ))
     builder.add(types.InlineKeyboardButton(
         text="Бизнес/Партнерство",
-        url="https://t.me/bestsocialbot"
+        url="https://t.me/OurWonderfulBot"
     ))
     builder.add(types.InlineKeyboardButton(
         text="Образование/Профессия",

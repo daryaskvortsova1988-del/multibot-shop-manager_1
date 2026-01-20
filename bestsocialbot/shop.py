@@ -58,11 +58,6 @@ async def main_shop_page(callback: CallbackQuery):
     if await check_blocked_user(callback):
         return
 
-    # Проверка опроса (защита от прямого вызова)
-    if not await check_survey_completed(callback.from_user.id):
-        await callback.answer("Для доступа к магазину необходимо пройти опрос.", show_alert=True)
-        return
-
     # await sync_from_sheets_to_db() # Disabled to prevent lag/crashing
 
     user_id = callback.from_user.id
@@ -180,13 +175,6 @@ async def section_stub(callback: CallbackQuery):
 @dp.callback_query(F.data == "all_catalogs")
 async def all_catalogs(callback: CallbackQuery):
     """Назад из магазина на главный экран (опрос/магазин) без проверок"""
-    if await check_blocked_user(callback):
-        return
-
-    # Проверка опроса
-    if not await check_survey_completed(callback.from_user.id):
-        await callback.answer("Для доступа к магазину необходимо пройти опрос.", show_alert=True)
-        return
     builder = InlineKeyboardBuilder()
     builder.add(types.InlineKeyboardButton(text="📦 Каталог товаров", callback_data="product_catalog"))
     builder.add(types.InlineKeyboardButton(text="🛠 Каталог услуг", callback_data="service_catalog"))

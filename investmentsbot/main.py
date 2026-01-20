@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from config import BOT_TOKEN, SHOWCASE_INTERVAL, CHANNEL_ID, ADMIN_ID, MAIN_SURVEY_SHEET_URL
+from config import BOT_TOKEN, SHOWCASE_INTERVAL, CHANNEL_ID, ADMIN_ID, MAIN_SURVEY_SHEET_URL, SHOWCASE_IMAGE_URL
 from db import init_db
 from dispatcher import dp
 from aiogram import types, F
@@ -59,11 +59,7 @@ async def get_showcase_keyboard(user_id: int):
 async def cmd_start_shop(message: types.Message ):
     """Главная страница магазина (первый экран после входа)"""
 
-    user_id = message.from_user.id
-    
-    if not await check_survey_completed(user_id):
-        await message.answer("Для доступа к магазину необходимо пройти опрос.")
-        return
+    user_id = message.chat.id
 
     # Sync not imported yet, do it in main flow or inside function
     # await sync_from_sheets_to_db()
@@ -323,11 +319,8 @@ async def main():
     # Заполнение таблиц из Excel примеров
     await fill_tables_from_excel()
     
-    # Список фоновых задач для корректного завершения
-    background_tasks = []
-
     # Запуск ежедневной синхронизации в 17:00 МСК
-    background_tasks.append(asyncio.create_task(start_daily_scheduler()))
+    asyncio.create_task(start_daily_scheduler())
     
 
     
@@ -381,51 +374,44 @@ async def main():
     await start_admin_sheets_sync()
     
     # Запуск периодических задач
-    background_tasks.append(asyncio.create_task(periodic_showcase()))
-    background_tasks.append(asyncio.create_task(periodic_sync()))
+    asyncio.create_task(periodic_showcase())
+    asyncio.create_task(periodic_sync())
     
     # Синхронизация автомагазина
     from automarket_sheets import scheduled_automarket_sync
-    background_tasks.append(asyncio.create_task(scheduled_automarket_sync()))
+    asyncio.create_task(scheduled_automarket_sync())
     
     # Синхронизация партнерских программ
     from partner_sheets import scheduled_partner_sync
-    background_tasks.append(asyncio.create_task(scheduled_partner_sync()))
+    asyncio.create_task(scheduled_partner_sync())
     
     # Синхронизация статусов заказов (функционал в orders.py)
     
     # ✅ СТАТИСТИКА СОГЛАСНО ТЗ №2 П.4-5
     from statistics_system import scheduled_statistics_export
-    background_tasks.append(asyncio.create_task(scheduled_statistics_export()))
+    asyncio.create_task(scheduled_statistics_export())
     
     # ✅ СИСТЕМА ИНИЦИАТИВ СОГЛАСНО ТЗ №2 П.1
-    background_tasks.append(asyncio.create_task(scheduled_initiatives_sync()))
+    asyncio.create_task(scheduled_initiatives_sync())
     
     # Запуск polling с retry логикой
     max_retries = 5
     retry_delay = 5
     
-    try:
-        for attempt in range(max_retries):
-            try:
-                print(f"Попытка подключения к Telegram API ({attempt + 1}/{max_retries})...")
-                await dp.start_polling(bot)
-                break
-            except Exception as e:
-                logging.error(f"Ошибка подключения к Telegram (попытка {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    print(f"Повторная попытка через {retry_delay} секунд...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Экспоненциальная задержка
-                else:
-                    print("Не удалось подключиться к Telegram API. Проверьте интернет-соединение.")
-                    raise
-    finally:
-        print("Остановка бота... Завершение фоновых задач.")
-        for task in background_tasks:
-            task.cancel()
-        await asyncio.gather(*background_tasks, return_exceptions=True)
-        print("Фоновые задачи завершены.")
+    for attempt in range(max_retries):
+        try:
+            print(f"Попытка подключения к Telegram API ({attempt + 1}/{max_retries})...")
+            await dp.start_polling(bot)
+            break
+        except Exception as e:
+            logging.error(f"Ошибка подключения к Telegram (попытка {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                print(f"Повторная попытка через {retry_delay} секунд...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Экспоненциальная задержка
+            else:
+                print("Не удалось подключиться к Telegram API. Проверьте интернет-соединение.")
+                raise
 
 
 
@@ -448,10 +434,7 @@ async def send_showcase(chat_id: int):
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    # photo_url = "https://i.postimg.cc/d3DLXMwT/social.jpg"
-    from aiogram.types import FSInputFile
-    photo = FSInputFile("assets/showcase.jpg")
-    
+    photo_url = SHOWCASE_IMAGE_URL
     builder = InlineKeyboardBuilder()
     builder.add(types.InlineKeyboardButton(text="Опрос", url=f"https://t.me/{bot_username}?start=survey"))
     builder.add(types.InlineKeyboardButton(text="Магазин", url=f"https://t.me/{bot_username}?start=shop"))
@@ -459,7 +442,7 @@ async def send_showcase(chat_id: int):
     
     message = await bot.send_photo(
         chat_id=chat_id,
-        photo=photo,
+        photo=photo_url,
         caption=SHOWCASE_TEXT,
         reply_markup=builder.as_markup()
     )

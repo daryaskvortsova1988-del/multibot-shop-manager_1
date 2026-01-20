@@ -4,21 +4,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("WOND_BOT_TOKEN")
-def parse_channel_id(value):
-    if not value:
-        return -1002160822750
-    try:
-        # Remove any leading dashes to check digits, then restore one neg sign if needed
-        clean_val = value.replace('--', '-')
-        return int(clean_val)
-    except ValueError:
-        return -1002160822750
-
-CHANNEL_ID = parse_channel_id(os.getenv("CHANNEL_ID", "-1002160822750"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1002160822750"))
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/avto_avia_club")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 SHOWCASE_INTERVAL = int(os.getenv("SHOWCASE_INTERVAL", "21600"))
 CREDENTIALS_FILE = os.getenv("CREDENTIALS_FILE", "credentials.json")
+SHOWCASE_IMAGE_URL = os.getenv("SHOWCASE_IMAGE_URL", "https://i.postimg.cc/d3DLXMwT/social.jpg")
 
 TELETHON_API_ID = int(os.getenv("TELETHON_API_ID", "0"))
 TELETHON_API_HASH = os.getenv("TELETHON_API_HASH", "")
