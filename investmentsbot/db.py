@@ -49,7 +49,8 @@ async def init_db():
                     business TEXT,
                     products_services TEXT,
                     account_status TEXT,
-                    requests_text TEXT
+                    requests_text TEXT,
+                    user_status TEXT
                 )
             """)
 
@@ -57,6 +58,13 @@ async def init_db():
             try:
                 await db.execute("ALTER TABLE users ADD COLUMN requests_text TEXT")
                 print("Added column requests_text to users table")
+            except Exception:
+                pass # Колонка уже существует
+
+            # Проверка и добавление колонки user_status если её нет (миграция)
+            try:
+                await db.execute("ALTER TABLE users ADD COLUMN user_status TEXT")
+                print("Added column user_status to users table")
             except Exception:
                 pass # Колонка уже существует
 
@@ -72,14 +80,14 @@ async def init_db():
                         investor_trader, business_proposal, bonus_total, bonus_adjustment, current_balance, problem_cost,
                         notes, partnership_date, referral_count, referral_payment, subscription_date,
                         subscription_payment_date, purchases, sales, requisites, shop_id, business,
-                        products_services, account_status, first_name, last_name, has_completed_survey, created_at, requests_text
+                        products_services, account_status, first_name, last_name, has_completed_survey, created_at, requests_text, user_status
                     ) VALUES (
                         'Дата опроса', 0, 'Telegram ID', 'ФИО', 'Дата рождения', 'Место жительства', 'Email', 'Телефон', 'Занятость',
                         'Финансовая проблема', 'Социальная проблема', 'Экологическая проблема', 'Пассивный подписчик', 'Активный партнер',
                         'Инвестор/трейдер', 'Бизнес-предложение', 0, 0, 0, 'Стоимость проблем',
                         'Примечания', 'Дата партнерства', 0, 'Оплата за рефералов', 'Дата подписки',
                         'Дата оплаты подписки', 'Покупки', 'Продажи', 'Реквизиты', 'ID в магазине', 'Бизнес',
-                        'Товары/услуги', 'Статус аккаунта', '', '', 0, datetime('now'), '0 / 0'
+                        'Товары/услуги', 'Статус аккаунта', '', '', 0, datetime('now'), '0 / 0', 'Статус подписчика'
                     )
                 """)
 
@@ -559,6 +567,55 @@ async def init_db():
             except Exception:
                 pass
 
+
+
+            # Таблица постов для контента
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS shop_posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category_id INTEGER,
+                    title TEXT,
+                    content_text TEXT,
+                    media_file_id TEXT,
+                    media_type TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT,
+                    FOREIGN KEY(category_id) REFERENCES categories(id)
+                )
+            """)
+            
+            # Миграция: created_at для categories
+            try:
+                await db.execute("ALTER TABLE categories ADD COLUMN created_at TEXT")
+            except Exception:
+                pass
+            
+            # Предзаполнение категорий контента
+            content_sections = {
+                'news': ['Тематические новости', 'Факты/Ситуации', 'Объявления', 'Новости партнеров', 'Новости инвесторов', 'Анонсы товаров/услуг', 'Успехи', 'Отчеты', 'Отзывы', 'Оценки'],
+                'promotions': ['Покупки/Продажи', 'Мероприятия', 'Прогнозы/Советы', 'Аналитика', 'Образовательные материалы'],
+                'popular': ['Хиты контента', 'Тренды заявок', 'Плейлисты', 'Познавательное', 'Развлекательное', 'Юмор-шоу', 'Реакции', 'Обзоры', 'Уроки', 'Истории успехов'],
+                'new_items': []
+            }
+            
+            for root_key, subcats in content_sections.items():
+                cursor = await db.execute("SELECT id FROM categories WHERE catalog_type = ? AND parent_id IS NULL", (root_key,))
+                row = await cursor.fetchone()
+                if not row:
+                    root_name_map = {'news': 'Новости', 'promotions': 'Акции', 'popular': 'Популярное', 'new_items': 'Новинки'}
+                    await db.execute("INSERT INTO categories (catalog_type, name, parent_id, created_at) VALUES (?, ?, NULL, datetime('now'))", 
+                                     (root_key, root_name_map.get(root_key, root_key)))
+                    await db.commit()
+                    cursor = await db.execute("SELECT last_insert_rowid()")
+                    root_id = (await cursor.fetchone())[0]
+                else:
+                    root_id = row[0]
+                
+                for sub in subcats:
+                    cursor = await db.execute("SELECT id FROM categories WHERE parent_id = ? AND name = ?", (root_id, sub))
+                    if not await cursor.fetchone():
+                        await db.execute("INSERT INTO categories (catalog_type, name, parent_id, created_at) VALUES (?, ?, ?, datetime('now'))",
+                                         (root_key, sub, root_id))
 
             await db.commit()
 
