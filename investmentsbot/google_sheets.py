@@ -257,18 +257,40 @@ async def sync_with_google_sheets():
                         val_db = db_fields[field]
                         val_sheet = gsheet_fields[field]
                         
+                        def normalize_val(v):
+                            if v is None:
+                                return ""
+                            s = str(v).strip()
+                            if s.lower() == "none":
+                                return ""
+                            if field == 'username':
+                                return s.lstrip('@')
+                            return s
+
+                        norm_db = normalize_val(val_db)
+                        norm_sheet = normalize_val(val_sheet)
+
                         # Сравнение с учетом типов
                         is_diff = False
-                        if isinstance(val_db, float) or isinstance(val_sheet, float):
-                             try:
-                                 if abs(float(val_db) - float(val_sheet)) > 0.01:
-                                     is_diff = True
-                             except:
-                                 if str(val_db) != str(val_sheet):
-                                     is_diff = True
-                        else:
-                            if str(val_db) != str(val_sheet):
-                                is_diff = True
+                        
+                        # Если оба значения могут быть числами
+                        try:
+                            f1 = float(norm_db) if norm_db else 0.0
+                            f2 = float(norm_sheet) if norm_sheet else 0.0
+                            # Если исходные значения были похожи на числа (не пустые строки, если только одно не 0)
+                            # Проверяем "числовую" разницу только если обе строки выглядят как числа
+                            is_num_db = norm_db.replace('.', '', 1).isdigit() or (norm_db.startswith('-') and norm_db[1:].replace('.', '', 1).isdigit())
+                            is_num_sheet = norm_sheet.replace('.', '', 1).isdigit() or (norm_sheet.startswith('-') and norm_sheet[1:].replace('.', '', 1).isdigit())
+                            
+                            if is_num_db and is_num_sheet:
+                                if abs(f1 - f2) > 0.01:
+                                    is_diff = True
+                            else:
+                                if norm_db != norm_sheet:
+                                    is_diff = True
+                        except:
+                             if norm_db != norm_sheet:
+                                 is_diff = True
                                 
                         if is_diff:
                             changes[user_id][field] = {
@@ -379,10 +401,15 @@ async def sync_with_google_sheets():
 async def sync_db_to_google_sheets():
     try:
         # CRITICAL: Сначала забираем свежие изменения из таблицы, чтобы не затереть их!
+        # CRITICAL: Сначала забираем свежие изменения из таблицы, чтобы не затереть их!
         try:
-             await sync_from_sheets_to_db()
+             sync_result = await sync_from_sheets_to_db()
+             if sync_result and not sync_result.get("success", False):
+                 logging.error(f"Pre-sync failed: {sync_result.get('message')}. Aborting export to prevent data loss.")
+                 return False
         except Exception as sync_err:
-             logging.error(f"Pre-sync failed in sync_db_to_google_sheets: {sync_err}")
+             logging.error(f"Pre-sync failed with exception in sync_db_to_google_sheets: {sync_err}")
+             return False
 
         # Сначала агрегируем статистику
         from data_aggregator import aggregate_user_statistics
@@ -514,7 +541,7 @@ async def sync_db_to_google_sheets():
 
             row_data = [
                 formatted_date, # 0. Дата опроса/подписки
-                user[2], # 1. Username
+                str(user[2]).lstrip('@'), # 1. Username
                 user[3], # 2. Full Name + Age
                 user[4], # 3. Location
                 user[5], # 4. Email
@@ -587,7 +614,9 @@ async def sync_from_sheets_to_db() -> Dict[str, Any]:
 
         if not all_data:
             return {
-                "success": False,
+                # Empty sheet is not a failure, just nothing to sync. 
+                # Proceeding allows export to populate an empty sheet.
+                "success": True, 
                 "message": "В таблице нет данных",
                 "synced_count": 0
             }
@@ -609,6 +638,7 @@ async def sync_from_sheets_to_db() -> Dict[str, Any]:
                         'ID'
                     ]
                     
+                    found_key = None
                     for key in keys_to_check:
                          if key in row and str(row[key]).strip():
                              telegram_id = row[key]
@@ -651,7 +681,7 @@ async def sync_from_sheets_to_db() -> Dict[str, Any]:
 
                     user_data = {
                         "user_id": user_id,
-                        "username": get_val(['1. Имя Username подписчика в Телеграм', 'Username', 'Телеграм @username']),
+                        "username": str(get_val(['1. Имя Username подписчика в Телеграм', 'Username', 'Телеграм @username'])).strip().lstrip('@'),
                         "full_name": get_val(['2. ФИО и возраст подписчика', 'ФИО', 'ФИО и возраст подписчика']),
                         "birth_date": get_val(['Дата рождения']),
                         "location": get_val(['3. Место жительства подписчика', 'Место жительства']),
@@ -784,6 +814,8 @@ def _safe_float(value) -> float:
     if value is None:
         return 0.0
     try:
+        if isinstance(value, str):
+            value = value.replace(',', '.')
         return float(value)
     except (ValueError, TypeError):
         return 0.0

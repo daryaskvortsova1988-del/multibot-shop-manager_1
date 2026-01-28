@@ -17,6 +17,22 @@ from filters import is_valid_email, is_valid_phone
 from utils import check_blocked_user
 from handler_integration import handle_besthome_integration_callback, handle_autoavia_integration_callback
 from initiatives_system import is_valid_proposal
+import sys
+import os
+ 
+# Add shared_storage to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from shared_storage.global_db import (
+    get_user_subscription_count, 
+    is_user_subscribed, 
+    register_user_subscription, 
+    get_global_user_survey, 
+    save_global_user,
+    get_legal_document
+)
+from aiogram.types import BufferedInputFile
+
+BOT_FOLDER_NAME = os.path.basename(os.path.dirname(__file__))
 
 class SurveyStates(StatesGroup):
     START = State()
@@ -125,6 +141,39 @@ async def survey_start(callback: CallbackQuery, state: FSMContext):
 async def start_survey(callback: CallbackQuery, state: FSMContext):
     if await check_blocked_user(callback):
         return
+
+    user_id = callback.from_user.id
+    
+    # --- GLOBAL USER CHECK ---
+    # --- GLOBAL USER CHECK ---
+    try:
+        import_success = await import_global_user(
+             user_id, 
+             callback.from_user.username or "", 
+             callback.from_user.first_name or "", 
+             callback.from_user.last_name or ""
+        )
+        if import_success:
+             await callback.message.answer("✅ Ваши данные успешно импортированы из общего профиля! Вы зарегистрированы в этом боте.")
+             await state.clear()
+             builder = InlineKeyboardBuilder()
+             builder.add(types.InlineKeyboardButton(text="🏪 Перейти в магазин", callback_data="main_shop_page"))
+             await callback.message.answer(
+                "Регистрация завершена. Добро пожаловать!",
+                reply_markup=builder.as_markup()
+             )
+             await callback.answer()
+             return
+
+    except Exception as e:
+        if "limit" in str(e).lower():
+             await callback.message.answer("❌ Вы не можете подписаться на этого бота, так как достигли лимита подписок (максимум 3 бота).")
+             await callback.answer()
+             return
+        print(f"Global DB Error in start_survey: {e}")
+        import traceback
+        traceback.print_exc()
+    # -------------------------
 
     await state.set_state(SurveyStates.Q3)
     # Автоматически заполняем username если есть
@@ -376,6 +425,33 @@ async def process_q16(message: Message, state: FSMContext):
         )
         await db.commit()
 
+    # --- SAVE TO GLOBAL DB ---
+    try:
+        # Sanitize Q3 (Username) to ensure single @
+        if "q3" in data and data["q3"]:
+             clean_q3 = data["q3"].replace("@", "").strip()
+             data["q3"] = f"@{clean_q3}"
+
+        await save_global_user(
+            user_id, 
+            message.from_user.username or "", 
+            data.get("first_name", "") + " " + data.get("last_name", ""),
+            data # Saving all state data (q3, q4, etc.)
+        )
+        await register_user_subscription(user_id, BOT_FOLDER_NAME)
+    except Exception as global_e:
+        print(f"Error saving to global DB: {global_e}")
+    # -------------------------
+
+    # Process referral
+    referrer_id = data.get("referrer_id")
+    if referrer_id:
+        try:
+             from referral_system import process_referral
+             await process_referral(user_id, referrer_id)
+        except Exception as e:
+             print(f"Error processing referral in survey: {e}")
+
     try:
         # Отправляем уведомление о создании/обновлении профиля
         await send_user_notification(bot, user_id, {})
@@ -390,6 +466,41 @@ async def process_q16(message: Message, state: FSMContext):
 В опросе вы заявили свою самую важную проблему - она может быть не только личной, но и общей также и для других подписчиков, партнеров и инвесторов. С целью взаимодействия с ними вы можете выбрать здесь в меню ТОЛЬКО ОДНУ КНОПКУ Телеграм сообщества, которое наиболее соответствует вашей проблеме, и перейти в его чат-бот, где будет создан ваш личный профиль с учётом ваших данных, активности и баланса бонусов. 
 ЖЕЛАЕМ ВАМ УСПЕШНОГО РЕШЕНИЯ ВАШИХ ПРОБЛЕМ В КЛУБЕ ПО ОБЩИМ ИНТЕРЕСАМ!"""
     )
+    
+    # Send Confirmation Message with Legal Docs buttons
+    builder = InlineKeyboardBuilder()
+    builder.add(types.InlineKeyboardButton(text="📜 Политика конфиденциальности", callback_data="get_legal_privacy"))
+    builder.add(types.InlineKeyboardButton(text="📜 Пользовательское соглашение", callback_data="get_legal_terms"))
+    builder.add(types.InlineKeyboardButton(text="✅ Подтверждаю", callback_data="confirm_legal"))
+    builder.adjust(1)
+    
+    await message.answer(
+        "✅ Подтверждаю, что мне больше 18 лет, я ознакомился и обязуюсь выполнять как подписчик Пользовательское соглашение и Политику конфиденциальности в Сообществе.",
+        reply_markup=builder.as_markup()
+    )
+    await state.clear() # Clear state after survey is done
+@dp.callback_query(F.data == "get_legal_privacy")
+async def get_legal_privacy(callback: CallbackQuery):
+    content = await get_legal_document("privacy_policy")
+    if content:
+        file = BufferedInputFile(content.encode('utf-8'), filename="privacy_policy.txt")
+        await callback.message.answer_document(file, caption="📜 Политика конфиденциальности")
+    else:
+        await callback.answer("Документ не найден", show_alert=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == "get_legal_terms")
+async def get_legal_terms(callback: CallbackQuery):
+    content = await get_legal_document("user_agreement")
+    if content:
+        file = BufferedInputFile(content.encode('utf-8'), filename="user_agreement.txt")
+        await callback.message.answer_document(file, caption="📜 Пользовательское соглашение")
+    else:
+        await callback.answer("Документ не найден", show_alert=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == "confirm_legal")
+async def confirm_legal(callback: CallbackQuery):
     builder = InlineKeyboardBuilder()
     builder.add(types.InlineKeyboardButton(
         text="Дом/Жилье",
@@ -464,18 +575,13 @@ async def process_q16(message: Message, state: FSMContext):
         url="https://t.me/+b6yAidzNRd8yMTgy"
     ))
 
+    builder.adjust(1)
 
-    builder.adjust(1, 1, 1)
-
-
-
-    await message.answer(
+    await callback.message.edit_text(
         text="Выберите в меню и нажмите кнопку по вашей главной проблеме для перехода в свое целевое сообщество⏬",
         reply_markup=builder.as_markup()
     )
-
-
-    await state.clear()
+    await callback.answer()
 
 
 
@@ -778,5 +884,153 @@ async def nature_links(callback: CallbackQuery):
                 "https://t.me/problems_in_nature_bot",
                 "https://t.me/+y7u2xXDQIUA3NGMy",
                 "https://t.me/+x_qEjMskwVoyOGRi")
+
+async def sync_local_to_global(user_id: int):
+    """Backfills existing local user data to Global DB."""
+    print(f"DEBUG: sync_local_to_global called for {user_id}")
+    try:
+        # Check if already in global DB
+        global_data = await get_global_user_survey(user_id)
+        if global_data:
+            print(f"DEBUG: User {user_id} found in Global DB, registering subscription")
+            # Maybe just update subscription?
+            await register_user_subscription(user_id, BOT_FOLDER_NAME)
+            return
+
+        print(f"DEBUG: Connecting to local DB for {user_id}")
+        async with aiosqlite.connect("bot_database.db") as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+            user_row = await cursor.fetchone()
+            
+            if not user_row:
+                print(f"DEBUG: User {user_id} not found in local users table")
+                return
+            if not user_row['has_completed_survey']:
+                print(f"DEBUG: User {user_id} has not completed survey")
+                return
+
+            print(f"DEBUG: User {user_id} found locally, preparing global data")
+            survey_data = {
+                "q3": f"@{str(user_row['username']).strip().lstrip('@')}" if user_row['username'] else "",
+                "q4": user_row['full_name'] or "",
+                "q6": user_row['location'] or "",
+                "q7": user_row['email'] or "",
+                "q9": user_row['employment'] or "",
+                "q10": user_row['financial_problem'] or "",
+                "q11": user_row['social_problem'] or "",
+                "q12": user_row['ecological_problem'] or "",
+                "q13": user_row['passive_subscriber'] or "",
+                "q14": user_row['active_partner'] or "",
+                "q15": user_row['investor_trader'] or "",
+                "q16": user_row['business_proposal'] or "",
+                "first_name": user_row['first_name'] or "",
+                "last_name": user_row['last_name'] or ""
+            }
+
+            print(f"DEBUG: Saving user {user_id} to Global DB")
+            await save_global_user(
+                user_id,
+                user_row['username'] or "",
+                (user_row['first_name'] or "") + " " + (user_row['last_name'] or ""),
+                survey_data
+            )
+            await register_user_subscription(user_id, BOT_FOLDER_NAME)
+            print(f"DEBUG: Synced existing user {user_id} to Global DB")
+            
+    except Exception as e:
+        print(f"Error executing sync_local_to_global: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def import_global_user(user_id: int, username: str, first_name: str, last_name: str) -> bool:
+    """
+    Checks if user exists in global DB. If so, imports data to local DB,
+    registers subscription, and triggers sync.
+    Returns True if imported, False if not found.
+    Raises Exception if limit reached.
+    """
+    
+    # Check subscription limit first
+    sub_count = await get_user_subscription_count(user_id)
+    is_subbed = await is_user_subscribed(user_id, BOT_FOLDER_NAME)
+    
+    # Log for debug
+    print(f"DEBUG: import_global_user check {user_id}: sub_count={sub_count}, is_subbed={is_subbed}, bot={BOT_FOLDER_NAME}")
+    
+    if sub_count >= 3 and not is_subbed:
+        raise Exception("Subscription limit reached")
+
+    # Check existing survey data
+    global_survey = await get_global_user_survey(user_id)
+    if not global_survey:
+        print(f"DEBUG: import_global_user {user_id}: No global survey found")
+        return False
+        
+    print(f"DEBUG: import_global_user {user_id}: Found global survey, importing...")
+    
+    # COPY DATA TO LOCAL DB
+    async with aiosqlite.connect("bot_database.db") as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO users (
+                user_id, username, first_name, last_name, has_completed_survey, created_at,
+                survey_date, full_name, birth_date, location, email, phone, employment,
+                financial_problem, social_problem, ecological_problem, passive_subscriber,
+                active_partner, investor_trader, business_proposal
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                username,
+                first_name,
+                last_name,
+                1,
+                datetime.now().isoformat(),
+                datetime.now().strftime("%Y-%m-%d"),
+                global_survey.get("q4", ""),
+                "",
+                global_survey.get("q6", ""),
+                global_survey.get("q7", ""),
+                "",
+                global_survey.get("q9", ""),
+                global_survey.get("q10", ""),
+                global_survey.get("q11", ""),
+                global_survey.get("q12", ""),
+                global_survey.get("q13", ""),
+                global_survey.get("q14", ""),
+                global_survey.get("q15", ""),
+                global_survey.get("q16", "")
+            )
+        )
+        
+        # Copy answers
+        for q_num in [3, 4, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16]:
+            val = global_survey.get(f"q{q_num}", "")
+            if q_num == 3 and val:
+                # Ensure single @ for username
+                val = f"@{str(val).replace('@', '').strip()}"
+
+            await db.execute(
+                "INSERT INTO survey_answers (user_id, question_id, answer_text, answered_at) VALUES (?, ?, ?, ?)",
+                (user_id, q_num, val, datetime.now().isoformat())
+            )
+
+        # Initialize bonuses (independent)
+        await db.execute(
+            "INSERT OR IGNORE INTO user_bonuses (user_id, bonus_total, current_balance, updated_at) VALUES (?, 0, 0, ?)",
+            (user_id, datetime.now().isoformat())
+        )
+        await db.commit()
+    
+    # Register subscription
+    await register_user_subscription(user_id, BOT_FOLDER_NAME)
+    
+    # Sync to Google Sheets
+    from google_sheets import sync_db_to_google_sheets
+    asyncio.create_task(sync_db_to_google_sheets())
+    print(f"DEBUG: Successfully imported Global User {user_id}")
+    
+    return True
 
 

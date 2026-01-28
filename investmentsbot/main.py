@@ -12,6 +12,13 @@ from bot_instance import bot
 from captcha import send_captcha, process_captcha_selection, CaptchaStates
 from google_sheets import sync_db_to_google_sheets, sync_db_to_main_survey_sheet, sync_with_google_sheets, sync_requests_from_sheets_to_db #, sync_from_sheets_to_db
 
+import sys
+import os
+
+# Add shared_storage to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from shared_storage.global_db import init_global_db
+
 async def check_blocked_user(callback):
     """Проверка заблокированных пользователей"""
     try:
@@ -46,6 +53,7 @@ async def get_showcase_keyboard(user_id: int):
         has_survey = survey_status_row and survey_status_row[0]
 
     builder = InlineKeyboardBuilder()
+    builder = InlineKeyboardBuilder()
     if user_exists:
         builder.add(types.InlineKeyboardButton(text="📝 Опрос", callback_data="survey"))
         if has_survey:
@@ -53,18 +61,10 @@ async def get_showcase_keyboard(user_id: int):
         else:
             builder.add(types.InlineKeyboardButton(text="🔒 Магазин (пройдите опрос)", callback_data="shop_locked"))
     else:
-        builder.add(types.InlineKeyboardButton(text="📝 Опрос (недоступно)", callback_data="disabled"))
-        builder.add(types.InlineKeyboardButton(text="🏪 Магазин (недоступно)", callback_data="disabled"))
-    
-    builder.adjust(2) # 2 buttons per row if both fit, or 1 if long text? "Магазин (пройдите опрос)" might be long.
-    # Let's adjust to 1 per row if locked to ensure readability? 
-    # Or keep 2. The text "🔒 Магазин (пройдите опрос)" is surprisingly long.
-    # Let's try sticking to builder.adjust(1) for this case or keep 2 if it fits. 
-    # Telegram buttons truncate if too long. 
-    # "🔒 Магазин (сначала опрос)" is shorter.
-    # "🔒 Магазин (нет доступа)"
-    # Let's stick with the code above but maybe adjust(1) if locked?
-    # Simple is better. The logic above puts them side by side.
+        # User passed captcha but not yet in DB (survey not started/finished)
+        # Allow survey, but lock shop
+        builder.add(types.InlineKeyboardButton(text="📝 Опрос", callback_data="survey"))
+        builder.add(types.InlineKeyboardButton(text="🔒 Магазин (пройдите опрос)", callback_data="shop_locked"))
     
     builder.adjust(1) 
     
@@ -139,9 +139,72 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
         user_exists = await cursor.fetchone()
         print(f"DEBUG: user_exists query result: {user_exists}")
     
-    # Если пользователя нет, пробуем синхронизировать с Google Sheets (возможно он пришел из другого бота)
+    # Если пользователя нет, пробуем найти в глобальной БД или синхронизировать с Google Sheets
     if not user_exists:
-        print("DEBUG: User not found, attempting to sync with Google Sheets...")
+        print("DEBUG: User not found locally. Checking Global DB and Google Sheets...")
+        
+        # 1. Попытка синхронизации из глобальной базы данных (для перехода между ботами)
+        try:
+            import sys
+            import os
+            # Add shared_storage to path if not already there
+            shared_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            if shared_path not in sys.path:
+                sys.path.append(shared_path)
+                
+            from shared_storage.global_db import get_global_user_survey, register_user_subscription, get_user_subscription_count
+            
+            # Проверка глобальной подписки
+            survey_data = get_global_user_survey(user_id)
+            
+            if survey_data:
+                print(f"DEBUG: Found user {user_id} in Global DB. Copying data...")
+                
+                # Проверка лимита ботов (если это новый бот для пользователя)
+                # subscription_count = get_user_subscription_count(user_id)
+                # if subscription_count >= 3: ... (logic handled in survey.py, but maybe check here too?)
+                # For seamless transition, we assume click means intent to join. 
+                # If limits are strict, we should check here. But let's allow "start" and block later if needed?
+                # Actually, better to just copy and register.
+                
+                # Копируем данные из глобальной БД в локальную
+                from survey import save_user_data_to_db
+                
+                # Prepare data dict (similar to state data)
+                user_data_for_db = {
+                    'username': survey_data.get('username'),
+                    'full_name': survey_data.get('full_name'),
+                    # Map other fields from survey_data json
+                    # survey_data['survey_data'] is the JSON dict
+                }
+                
+                # Merge survey_data json into flat structure if needed by save_user_data_to_db
+                if 'survey_data' in survey_data and isinstance(survey_data['survey_data'], dict):
+                    user_data_for_db.update(survey_data['survey_data'])
+                
+                # Save to local DB
+                await save_user_data_to_db(user_id, user_data_for_db)
+                
+                # Register subscription in Global DB
+                current_bot_folder = os.path.basename(os.path.dirname(__file__))
+                register_user_subscription(user_id, current_bot_folder)
+                
+                # Sync to Google Sheets for this bot
+                from google_sheets import sync_with_google_sheets
+                await sync_with_google_sheets()
+                
+                await message.answer(f"✅ Вы успешно авторизованы! Ваши данные загружены из профиля сообщества.\n\nДобро пожаловать в {current_bot_folder}!")
+                
+                # Show main menu immediately
+                await cmd_start_shop(message)
+                return
+
+        except Exception as e:
+            print(f"⚠️ Error checking Global DB: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # 2. Fallback to Google Sheets sync specific to this bot (old logic)
         try:
             from google_sheets import sync_with_google_sheets
             await sync_with_google_sheets()
@@ -153,6 +216,23 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
                 print(f"DEBUG: user_exists query result after sync: {user_exists}")
         except Exception as e:
             print(f"ERROR: Failed to sync with Google Sheets on start: {e}")
+
+    # NEW: Try to import from GLOBAL DB if not found locally
+    if not user_exists:
+        try:
+            from survey import import_global_user
+            username = message.from_user.username or ""
+            curr_first = message.from_user.first_name or ""
+            curr_last = message.from_user.last_name or ""
+            
+            is_imported = await import_global_user(user_id, username, curr_first, curr_last)
+            if is_imported:
+                print("DEBUG: User imported from GLOBAL DB automatically!")
+                user_exists = True # Treating as existing
+                # Optional: Send welcome message?
+                await message.answer("✅ Ваш профиль успешно загружен!")
+        except Exception as e:
+            print(f"DEBUG: Failed to import from global DB: {e}")
 
     if not user_exists:
         print("DEBUG: New user detected, sending captcha")
@@ -169,6 +249,14 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
         await send_captcha(message, state)
     else:
         print("DEBUG: Existing user detected, sending showcase keyboard")
+        
+        # Check and sync to Global DB if missing
+        try:
+            from survey import sync_local_to_global
+            await sync_local_to_global(user_id)
+        except Exception as e:
+            print(f"Error syncing local to global: {e}")
+            
         keyboard = await get_showcase_keyboard(user_id)
         await message.answer("Добро пожаловать! Выберите действие:", reply_markup=keyboard)
 
@@ -344,7 +432,7 @@ async def periodic_sync():
                         await send_user_notification(bot, user_id, user_changes)
         except Exception as e:
             logging.error(f"Error in periodic sync: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(21600)
 async def periodic_update_invite_table():
     from admin import update_invite_table_with_channel_subs
     while True:
@@ -355,7 +443,11 @@ async def periodic_update_invite_table():
         await asyncio.sleep(3600)
 async def main():
     from db import init_db
+    from db import init_db
     await init_db()
+    
+    # Initialize Global DB
+    await init_global_db()
 
     # Инициализация реферальной системы
     from referral_system import init_referral_system
@@ -608,93 +700,56 @@ async def captcha_callback(callback: CallbackQuery, state: FSMContext):
                 await state.update_data(captcha_attempt_count=attempt_count)
                 await send_captcha(callback.message, state)
             else:
-                await state.clear()
+                # CRITICAL Fix: Don't just clear state, we must PERSIST that captcha is passed!
                 user_id = callback.from_user.id
-                username = callback.from_user.username or ""
-                first_name = callback.from_user.first_name or ""
-                last_name = callback.from_user.last_name or ""
+                referrer_id = data.get("referrer_id")
+                shop_pending = data.get("shop_captcha_pending")
+                
+                await state.clear()
+                
+                # Mark captcha as passed so user isn't asked again
+                await state.update_data(shop_captcha_passed=True)
+
+                if referrer_id:
+                     # Restore referrer_id for survey
+                     await state.update_data(referrer_id=referrer_id)
+                
+                # If they were trying to enter shop, keep that context (optional, but good for tracking)
+                if shop_pending:
+                    await state.update_data(shop_captcha_pending=True)
+
+                # Если пользователь инициировал вход в магазин, сразу открываем ГЛАВНУЮ СТРАНИЦУ МАГАЗИНА
+                if data.get("shop_captcha_pending"):
+                     # But shop is locked now!
+                     # So we should tell them to take survey?
+                     # Let's just show the keyboard, they will see Shop is locked.
+                     pass 
+                
+                # Только теперь формируем клавиатуру
+                keyboard = await get_showcase_keyboard(user_id)
+                
                 try:
-                    import aiosqlite
-                    async with aiosqlite.connect("bot_database.db") as db:
-                        cursor = await db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-                        exists = await cursor.fetchone()
-                        if not exists:
-                            await db.execute(
-                                "INSERT INTO users (user_id, username, first_name, last_name, created_at, account_status) VALUES (?, ?, ?, ?, datetime('now'), ?)",
-                                (user_id, username, first_name, last_name, "Р")
-                            )
-                            await db.commit()
-                            
-                            # Отправляем сообщение о создании профиля
-                            try:
-                                await send_system_message(
-                                    user_id,
-                                    "Создание профиля", 
-                                    "Ваш профиль успешно создан! Добро пожаловать."
-                                )
-                            except Exception as e:
-                                print(f"Ошибка отправки сообщения о создании профиля: {e}")
-                    # Обрабатываем реферала если есть
-                    referrer_id = data.get("referrer_id")
-                    if referrer_id:
-                        from referral_system import process_referral
-                        await process_referral(user_id, referrer_id)
-
-                    # Если пользователь инициировал вход в магазин, сразу открываем ГЛАВНУЮ СТРАНИЦУ МАГАЗИНА
-                    if data.get("shop_captcha_pending"):
-                        from aiogram.types import CallbackQuery
-                        from shop import main_shop_page
-                        fake_callback = CallbackQuery(
-                            id=callback.id,
-                            from_user=callback.from_user,
-                            chat_instance=callback.chat_instance,
-                            message=callback.message,
-                            data="main_shop_page"
-                        )
-                        # Fix identifying: Mount the fake callback to the bot instance
-                        if callback.bot:
-                            fake_callback.as_(callback.bot)
-                        
-                        await main_shop_page(fake_callback)
+                    # Попытка 1: через message.answer (самый стандартный способ)
+                    if callback.message:
+                        await callback.message.answer("✅ Капча пройдена! Добро пожаловать!", reply_markup=keyboard)
                     else:
-                        # Только теперь формируем клавиатуру
-                        keyboard = await get_showcase_keyboard(user_id)
-                        
-                        try:
-                            # Попытка 1: через message.answer (самый стандартный способ)
-                            if callback.message:
-                                await callback.message.answer("✅ Капча пройдена! Добро пожаловать!", reply_markup=keyboard)
-                            else:
-                                raise Exception("Message object is missing")
-                        except Exception as e1:
-                            print(f"Failed to use message.answer: {e1}")
-                            # Попытка 2: через callback.bot (гарантированно привязанный бот)
-                            if callback.bot:
-                                await callback.bot.send_message(
-                                    chat_id=user_id,
-                                    text="✅ Капча пройдена! Добро пожаловать!",
-                                    reply_markup=keyboard
-                                )
-                            else:
-                                print("CRITICAL: callback.bot is None!")
-                                # Попытка 3: глобальный бот (крайний случай)
-                                from bot_instance import bot as global_bot
-                                await global_bot.send_message(user_id, "✅ Капча пройдена! Добро пожаловать!", reply_markup=keyboard)
+                        raise Exception("Message object is missing")
+                except Exception as e1:
+                    print(f"Failed to use message.answer: {e1}")
+                    # Попытка 2: через callback.bot (гарантированно привязанный бот)
+                    if callback.bot:
+                        await callback.bot.send_message(
+                            chat_id=user_id,
+                            text="✅ Капча пройдена! Добро пожаловать!",
+                            reply_markup=keyboard
+                        )
+                    else:
+                        print("CRITICAL: callback.bot is None!")
+                        # Попытка 3: глобальный бот (крайний случай)
+                        from bot_instance import bot as global_bot
+                        await global_bot.send_message(user_id, "✅ Капча пройдена! Добро пожаловать!", reply_markup=keyboard)
 
-                    print("SYNC CALL")
-                    try:
-                        from google_sheets import sync_db_to_google_sheets
-                        await sync_db_to_google_sheets()
-                    except Exception as sync_e:
-                        print(f"⚠️ Warning: Background sync failed: {sync_e}")
-                        # Don't fail the user interaction because of background sync
-                except Exception as send_msg_error:
-                    print(f"Ошибка при отправке сообщения: {send_msg_error}")
-                    import traceback
-                    traceback.print_exc()
-        else:
-            await state.update_data(captcha_attempt_count=0)
-            await send_captcha(callback.message, state)
+                # No sync call needed since no DB change
         try:
             await callback.answer()
         except Exception as callback_answer_error:
